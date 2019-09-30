@@ -28,59 +28,79 @@
 /*
 Package smartcrop implements a content aware image cropping library based on
 Jonas Wagner's smartcrop.js https://github.com/jwagner/smartcrop.js
+
+List of changes:
+change the struct field to include face
+import gocv
+
+add the face detection under the score function
+make smallimg global by declaring outside
+
+
 */
 package smartcrop
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"io/ioutil"
 	"log"
 	"math"
+	"sort"
 	"time"
 
-	"github.com/muesli/smartcrop/options"
+	"github.com/third-light/smartcrop/options"
 
 	"golang.org/x/image/draw"
+
+	"gocv.io/x/gocv"
 )
 
 var (
 	// ErrInvalidDimensions gets returned when the supplied dimensions are invalid
 	ErrInvalidDimensions = errors.New("Expect either a height or width")
-
-	skinColor = [3]float64{0.78, 0.57, 0.44}
+	//	skinColor = [3]float64{0.78, 0.57, 0.44} is default
+	skinColor = [3]float64{0.69, 0.51, 0.37} // doesn't matter because it is not "used"
+	smallimg image.Image
+	facerects []image.Rectangle
+	//newfacerects []image.Rectangle
 )
 
+
 const (
-	detailWeight            = 0.2
+	detailWeight            = 5.2 //default is 0.2
 	skinBias                = 0.01
 	skinBrightnessMin       = 0.2
 	skinBrightnessMax       = 1.0
 	skinThreshold           = 0.8
-	skinWeight              = 1.8
+	skinWeight              = 5.8 //default is 1.8
 	saturationBrightnessMin = 0.05
 	saturationBrightnessMax = 0.9
 	saturationThreshold     = 0.4
 	saturationBias          = 0.2
-	saturationWeight        = 0.3
+	saturationWeight        = 5.5 //default is 0.5
 	scoreDownSample         = 8 // step * minscale rounded down to the next power of two should be good
 	step                    = 8
 	scaleStep               = 0.1
-	minScale                = 0.9
-	maxScale                = 1.0
+	minScale                = 0.1
+	maxScale                = 0.9
 	edgeRadius              = 0.4
 	edgeWeight              = -20.0
 	outsideImportance       = -0.5
-	ruleOfThirds            = true
+	ruleOfThirds            = false
 	prescale                = true
-	prescaleMin             = 400.00
+	prescaleMin             = 600.00 //the higher, the more samples/candidate crop it generates
+	facedetection			= false
 )
+
 
 // Analyzer interface analyzes its struct and returns the best possible crop with the given
 // width and height returns an error if invalid
 type Analyzer interface {
 	FindBestCrop(img image.Image, width, height int) (image.Rectangle, error)
+	FindAllCrops(img image.Image, width int, height int) ([]Crop, error)
 }
 
 // Score contains values that classify matches
@@ -88,6 +108,7 @@ type Score struct {
 	Detail     float64
 	Saturation float64
 	Skin       float64
+	Face 	   float64
 }
 
 // Crop contains results
@@ -112,7 +133,6 @@ func NewAnalyzer(resizer options.Resizer) Analyzer {
 	logger := Logger{
 		DebugMode: false,
 	}
-
 	return NewAnalyzerWithLogger(resizer, logger)
 }
 
@@ -123,6 +143,75 @@ func NewAnalyzerWithLogger(resizer options.Resizer, logger Logger) Analyzer {
 	}
 	return &smartcropAnalyzer{Resizer: resizer, logger: logger}
 }
+
+func (o smartcropAnalyzer) FindAllCrops(img image.Image, width, height int) ([]Crop, error){
+	//edge cases
+	facerects = nil
+	//fmt.Println("initially facerects", facerects)
+
+	if width == 0 && height == 0 {
+		return []Crop{}, ErrInvalidDimensions
+	}
+
+	// resize image for faster processing
+	scale := math.Min(float64(img.Bounds().Dx())/float64(width), float64(img.Bounds().Dy())/float64(height))
+	var lowimg *image.RGBA
+	var prescalefactor = 1.0
+
+	if prescale == true {
+		//if f := 1.0 / scale / minScale; f < 1.0 {
+		//prescalefactor = f
+		//}
+		if f := prescaleMin / math.Min(float64(img.Bounds().Dx()), float64(img.Bounds().Dy())); f < 1.0 {
+			prescalefactor = f
+		}
+		o.logger.Log.Println(prescalefactor)
+
+		smallimg = o.Resize(
+			img,
+			uint(float64(img.Bounds().Dx())*prescalefactor),
+			uint(float64(img.Bounds().Dy())*prescalefactor))
+
+		lowimg = toRGBA(smallimg)
+	} else {
+		lowimg = toRGBA(img)
+	}
+
+	if o.logger.DebugMode {
+		writeImage("png", lowimg, "./smartcrop_prescale.png")
+	}
+
+	cropWidth, cropHeight := chop(float64(width)*scale*prescalefactor), chop(float64(height)*scale*prescalefactor)
+	realMinScale := math.Min(maxScale, math.Max(1.0/scale, minScale))
+
+	o.logger.Log.Printf("original resolution: %dx%d\n", img.Bounds().Dx(), img.Bounds().Dy())
+	o.logger.Log.Printf("scale: %f, cropw: %f, croph: %f, minscale: %f\n", scale, cropWidth, cropHeight, realMinScale)
+
+	if facedetection {
+		facerects = facedetector(smallimg)
+	}
+
+	//generate all the candidate crops
+	allCrops, err := analyseall(o.logger, lowimg, cropWidth, cropHeight, realMinScale)
+	if err != nil {
+		return allCrops, err
+	}
+
+	//rescaling all the rectangeles in the allCrop array
+	for i, crop := range allCrops {
+		if prescale == true {
+			allCrops[i].Min.X = int(chop(float64(crop.Min.X) / 2))
+			allCrops[i].Min.Y = int(chop(float64(crop.Min.Y) / 3))
+			allCrops[i].Max.X = int(chop(float64(crop.Max.X) / prescalefactor))
+			allCrops[i].Max.Y = int(chop(float64(crop.Max.Y) / prescalefactor))
+		}
+		crop.Rectangle.Canon()
+	}
+	//fmt.Println("finally", prescalefactor, facerects)
+
+	return allCrops, nil
+}
+
 
 func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (image.Rectangle, error) {
 	if width == 0 && height == 0 {
@@ -143,7 +232,7 @@ func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (ima
 		}
 		o.logger.Log.Println(prescalefactor)
 
-		smallimg := o.Resize(
+		smallimg = o.Resize(
 			img,
 			uint(float64(img.Bounds().Dx())*prescalefactor),
 			0)
@@ -178,8 +267,8 @@ func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (ima
 	return topCrop.Canon(), nil
 }
 
-func (c Crop) totalScore() float64 {
-	return (c.Score.Detail*detailWeight + c.Score.Skin*skinWeight + c.Score.Saturation*saturationWeight) / float64(c.Dx()) / float64(c.Dy())
+func (c Crop) TotalScore() float64 {
+	return (c.Score.Detail*detailWeight + c.Score.Skin*skinWeight + c.Score.Saturation*saturationWeight ) / (float64(c.Dx()) * float64(c.Dy())) + c.Score.Face
 }
 
 func chop(x float64) float64 {
@@ -237,6 +326,9 @@ func score(output *image.RGBA, crop Crop) Score {
 			g8 := float64(c.G)
 			b8 := float64(c.B)
 
+			//inspecting to see if the resolving into RGB is well behaved
+			//fmt.Println(x,y,r8.g8,b8)
+
 			imp := importance(crop, int(x), int(y))
 			det := g8 / 255.0
 
@@ -245,9 +337,138 @@ func score(output *image.RGBA, crop Crop) Score {
 			score.Saturation += b8 / 255.0 * (det + saturationBias) * imp
 		}
 	}
+	////call the crop function, returns a cropped image
+	////generating a cropped image
+	//
+	//type SubImager interface {
+	//	SubImage(r image.Rectangle) image.Image
+	//}
+	//
+	////.SubImage(crop.Rectangle) is a method
+	//croppedImg := smallimg.(SubImager).SubImage(crop.Rectangle)
+	//
+	////transform to Mat object
+	//matImg, _ := gocv.ImageToMatRGBA(croppedImg)
+	//
+	////xmlFile for face detection
+	//xmlFile := "/Users/ryan.liew/Documents/pilotCV/haarcascade_frontalface_default.xml"
+	//
+	//classifier := gocv.NewCascadeClassifier()
+	//defer classifier.Close()
+	//
+	//if !classifier.Load(xmlFile) {
+	//	fmt.Printf("Error reading cascade file: %v\n", xmlFile)
+	//	return score
+	//}
+	//
+	//rects := classifier.DetectMultiScale(matImg)
+	//
+	//if len(rects) == 1 {
+	//	score.Face = 20
+	//}
+
+	if facedetection { for _ , r := range facerects {
+		//fmt.Println(i,"th face rectangle at", r, "with area", r.Size().X * r.Size().Y)
+		//fmt.Println("checking if", r, "is in", crop.Rectangle)
+		if r.In(crop.Rectangle) == true && r.Size().X * r.Size().Y >= 30000 {
+			//fmt.Println("Yes! The" ,i,"th face rectangle at", r, "with area", r.Size().X * r.Size().Y, "is in", crop.Rectangle)
+			score.Face = 1.5
+			return score
+
+		} else if r.In(crop.Rectangle) == true && r.Size().X * r.Size().Y >= 15000 && r.Size().X * r.Size().Y < 30000 {
+			//fmt.Println("Yes! The" ,i,"th face rectangle at", r, "with area", r.Size().X * r.Size().Y, "is in", crop.Rectangle)
+			score.Face = 1
+			return score
+
+		} else if r.In(crop.Rectangle) == true && r.Size().X * r.Size().Y >= 5000 && r.Size().X * r.Size().Y < 15000 {
+			//fmt.Println("Yes! The" ,i,"th face rectangle at", r, "with area", r.Size().X * r.Size().Y, "is in", crop.Rectangle)
+			score.Face = 0.05
+			return score
+
+		} else {
+			score.Face = 0
+			return score
+		}
+	}
+
+	}
+	// code for facial recognition, some room of improvement on tuning the score value
+
+
+	//// code for facial recognition, some room of improvement on tuning the score value
+	//for i , r := range newfacerects {
+	//	fmt.Println(i,"th face rectangle at", r, "with area", r.Size().X * r.Size().Y)
+	//	//fmt.Println("checking if", r, "is in", crop.Rectangle)
+	//	if r.In(crop.Rectangle) == true && r.Size().X * r.Size().Y >= 30000 {
+	//		//fmt.Println("Yes! The" ,i,"th face rectangle at", r, "with area", r.Size().X * r.Size().Y, "is in", crop.Rectangle)
+	//		score.Face = 1.5
+	//		return score
+	//
+	//	} else if r.In(crop.Rectangle) == true && r.Size().X * r.Size().Y >= 15000 && r.Size().X * r.Size().Y < 30000 {
+	//		//fmt.Println("Yes! The" ,i,"th face rectangle at", r, "with area", r.Size().X * r.Size().Y, "is in", crop.Rectangle)
+	//		score.Face = 1
+	//		return score
+	//
+	//	} else if r.In(crop.Rectangle) == true && r.Size().X * r.Size().Y >= 5000 && r.Size().X * r.Size().Y < 15000 {
+	//		//fmt.Println("Yes! The" ,i,"th face rectangle at", r, "with area", r.Size().X * r.Size().Y, "is in", crop.Rectangle)
+	//		score.Face = 0.05
+	//		return score
+	//
+	//	} else {
+	//		score.Face = 0
+	//		return score
+	//	}
+	//}
 
 	return score
 }
+
+//please note that the image file being feeded in here is a lowimg (the resized version of the image). if you do not desire resampling you will need to modify it at the function that calls this function.
+func analyseall(logger Logger, img *image.RGBA, cropWidth, cropHeight, realMinScale float64) ([]Crop, error) {
+	//o is *RGBA object (low img)
+	o := image.NewRGBA(img.Bounds())
+
+	//these are debugging blocks
+	now := time.Now()
+	edgeDetect(img, o)
+	logger.Log.Println("Time elapsed edge:", time.Since(now))
+	debugOutput(logger.DebugMode, o, "edge")
+
+	now = time.Now()
+	skinDetect(img, o)
+	logger.Log.Println("Time elapsed skin:", time.Since(now))
+	debugOutput(logger.DebugMode, o, "skin")
+
+	now = time.Now()
+	saturationDetect(img, o)
+	logger.Log.Println("Time elapsed sat:", time.Since(now))
+	debugOutput(logger.DebugMode, o, "saturation")
+
+	// this bit is calling the function to generate crops
+	now = time.Now()
+	cs := crops(o, cropWidth, cropHeight, realMinScale) // will potentially need the output of this line to run
+	//detect and assign score if found a face
+	logger.Log.Println("Time elapsed crops:", time.Since(now), len(cs))
+
+	//evaluate the scores for each candidate crop, and updates the Score field of each "crop" object
+	for i:= 0; i<len(cs); i++  {
+		cs[i].Score = score(o, cs[i])
+	}
+
+	//// this block can potentially be removed
+	//now = time.Now()
+	//for _, crop := range cs {
+	//	nowIn := time.Now()
+	//	//o is *RGBA object (low img), crop is the one specific entry in cs array, which has Score and Rect field
+	//	crop.Score = score(o, crop)
+	//	logger.Log.Println("Time elapsed single-score:", time.Since(nowIn))
+	//}
+
+	logger.Log.Println("Time elapsed score:", time.Since(now))
+
+	return cs, nil
+}
+
 
 func analyse(logger Logger, img *image.RGBA, cropWidth, cropHeight, realMinScale float64) (image.Rectangle, error) {
 	o := image.NewRGBA(img.Bounds())
@@ -278,11 +499,12 @@ func analyse(logger Logger, img *image.RGBA, cropWidth, cropHeight, realMinScale
 		nowIn := time.Now()
 		crop.Score = score(o, crop)
 		logger.Log.Println("Time elapsed single-score:", time.Since(nowIn))
-		if crop.totalScore() > topScore {
+		if crop.TotalScore() > topScore {
 			topCrop = crop
-			topScore = crop.totalScore()
+			topScore = crop.TotalScore()
 		}
 	}
+	fmt.Println(topScore)
 	logger.Log.Println("Time elapsed score:", time.Since(now))
 
 	if logger.DebugMode {
@@ -430,6 +652,75 @@ func saturationDetect(i *image.RGBA, o *image.RGBA) {
 	}
 }
 
+func facedetector (smallimg image.Image) []image.Rectangle {
+	//fmt.Println("Currently processing", picture)
+	img, _ := gocv.ImageToMatRGBA(smallimg)
+
+	//remember to define full path here
+	// or you can use os.Args[1] but input the xml file in command line
+	xmlFile := "/Users/ryan.liew/Documents/pilotCV/haarcascade_frontalface_default.xml"
+
+	// load classifier to recognize faces, you can find the different classifier files from the opencv library
+	classifier := gocv.NewCascadeClassifier()
+	defer classifier.Close()
+
+	if !classifier.Load(xmlFile) {
+		fmt.Printf("Error reading cascade file: %v\n", xmlFile)
+		return []image.Rectangle{}
+	}
+
+	rects := classifier.DetectMultiScale(img)
+
+	//fmt.Printf("Program found %d faces\n", len(rects))
+
+	//filter out the rects with too small area (unlikely to be a face)
+	//defining the threshold can be tricky and dependent on the pixels of the image, to have a general solution usually we downsample it. Or you can run the first few image to get an average, but you will need to have that function at a higher level.
+
+	for _, r := range rects {
+		if r.Size().X * r.Size().Y > 5000 {
+			facerects = append(facerects, r)
+		}
+	}
+
+	//sorting it by area of the rectangle
+	sort.Slice(facerects, func(i, j int) bool {
+		return (facerects[i].Size().X * facerects[i].Size().Y ) > (facerects[j].Size().X * facerects[j].Size().Y )
+	})
+
+
+	//for i, r := range facerects {
+	//	fmt.Println("The", i, "rectangle", r, "has area", r.Size().X * r.Size().Y )
+	//}
+
+	////draw on the image to see what the algorithm is actually doing
+	//boxColor := color.RGBA{255, 0, 0, 0}
+	//boxColor2 := color.RGBA{0, 255, 0, 0}
+	//boxColor3 := color.RGBA{0, 0, 255, 0}
+	//
+	//for i, r := range facerects {
+	//	if i == 0 {
+	//		gocv.Rectangle(&img, r, boxColor, 4)
+	//		size := gocv.GetTextSize("First", gocv.FontItalic, 2, 4)
+	//		pt := image.Pt(r.Min.X+10, r.Min.Y+size.Y+50) //coordinate of the caption text
+	//		gocv.PutText(&img, "First", pt, gocv.FontItalic, 2, boxColor, 4)
+	//	} else if i == 1 {
+	//		gocv.Rectangle(&img, r, boxColor2, 4)
+	//		size := gocv.GetTextSize("Second", gocv.FontHersheyPlain, 2, 4)
+	//		pt := image.Pt(r.Min.X+10, r.Min.Y+size.Y+30)
+	//		gocv.PutText(&img, "Second", pt, gocv.FontHersheyPlain, 2, boxColor2, 4)
+	//	} else if i == 2 {
+	//		gocv.Rectangle(&img, r, boxColor3, 4)
+	//		size := gocv.GetTextSize("Third", gocv.FontHersheyPlain, 2, 4)
+	//		pt := image.Pt(r.Min.X+10, r.Min.Y+size.Y+10)
+	//		gocv.PutText(&img, "Third", pt, gocv.FontHersheyPlain, 2, boxColor3, 4)
+	//	}
+	//}
+	//
+	//gocv.IMWrite("facepic.jpeg", img)
+
+	return facerects
+}
+
 func crops(i image.Image, cropWidth, cropHeight, realMinScale float64) []Crop {
 	res := []Crop{}
 	width := i.Bounds().Dx()
@@ -457,6 +748,7 @@ func crops(i image.Image, cropWidth, cropHeight, realMinScale float64) []Crop {
 				})
 			}
 		}
+		fmt.Println(scale)
 	}
 
 	return res
