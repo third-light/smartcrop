@@ -33,6 +33,7 @@ package smartcrop
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"io/ioutil"
@@ -81,6 +82,7 @@ const (
 // width and height returns an error if invalid
 type Analyzer interface {
 	FindBestCrop(img image.Image, width, height int) (image.Rectangle, error)
+	FindAllCrops(img image.Image, width, height int) ([]Crop, error)
 }
 
 // Score contains values that classify matches
@@ -94,6 +96,10 @@ type Score struct {
 type Crop struct {
 	image.Rectangle
 	Score Score
+}
+
+func (c Crop) String() string {
+	return fmt.Sprintf("%d,%d - %d,%d (%f)", c.Min.X, c.Min.Y, c.Max.X, c.Max.Y, c.totalScore())
 }
 
 // Logger contains a logger.
@@ -124,20 +130,13 @@ func NewAnalyzerWithLogger(resizer options.Resizer, logger Logger) Analyzer {
 	return &smartcropAnalyzer{Resizer: resizer, logger: logger}
 }
 
-func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (image.Rectangle, error) {
-	if width == 0 && height == 0 {
-		return image.Rectangle{}, ErrInvalidDimensions
-	}
-
+func (o smartcropAnalyzer) preprocessForAnalysis(img image.Image, width, height int) (*image.RGBA, float64, float64, float64, float64) {
 	// resize image for faster processing
 	scale := math.Min(float64(img.Bounds().Dx())/float64(width), float64(img.Bounds().Dy())/float64(height))
 	var lowimg *image.RGBA
 	var prescalefactor = 1.0
 
 	if prescale {
-		// if f := 1.0 / scale / minScale; f < 1.0 {
-		// prescalefactor = f
-		// }
 		if f := prescaleMin / math.Min(float64(img.Bounds().Dx()), float64(img.Bounds().Dy())); f < 1.0 {
 			prescalefactor = f
 		}
@@ -163,9 +162,22 @@ func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (ima
 	o.logger.Log.Printf("original resolution: %dx%d\n", img.Bounds().Dx(), img.Bounds().Dy())
 	o.logger.Log.Printf("scale: %f, cropw: %f, croph: %f, minscale: %f\n", scale, cropWidth, cropHeight, realMinScale)
 
-	topCrop, err := analyse(o.logger, lowimg, cropWidth, cropHeight, realMinScale)
-	if err != nil {
-		return topCrop, err
+	return lowimg, cropWidth, cropHeight, realMinScale, prescalefactor
+}
+
+func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (image.Rectangle, error) {
+	if width == 0 && height == 0 {
+		return image.Rectangle{}, ErrInvalidDimensions
+	}
+
+	lowimg, cropWidth, cropHeight, realMinScale, prescalefactor := o.preprocessForAnalysis(img, width, height)
+
+	allCrops, processedImg := analyse(o.logger, lowimg, cropWidth, cropHeight, realMinScale)
+	topCrop := findTopCrop(o.logger, allCrops)
+
+	if o.logger.DebugMode {
+		drawDebugCrop(topCrop, processedImg)
+		debugOutput(true, processedImg, "final")
 	}
 
 	if prescale == true {
@@ -176,6 +188,28 @@ func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (ima
 	}
 
 	return topCrop.Canon(), nil
+}
+
+func (o smartcropAnalyzer) FindAllCrops(img image.Image, width, height int) ([]Crop, error) {
+	if width == 0 && height == 0 {
+		return []Crop{}, ErrInvalidDimensions
+	}
+
+	lowimg, cropWidth, cropHeight, realMinScale, prescalefactor := o.preprocessForAnalysis(img, width, height)
+
+	allCrops, _ := analyse(o.logger, lowimg, cropWidth, cropHeight, realMinScale)
+
+	for i, crop := range allCrops {
+		if prescale == true {
+			allCrops[i].Min.X = int(chop(float64(crop.Min.X) / prescalefactor))
+			allCrops[i].Min.Y = int(chop(float64(crop.Min.Y) / prescalefactor))
+			allCrops[i].Max.X = int(chop(float64(crop.Max.X) / prescalefactor))
+			allCrops[i].Max.Y = int(chop(float64(crop.Max.Y) / prescalefactor))
+		}
+		crop.Rectangle = crop.Canon()
+	}
+
+	return allCrops, nil
 }
 
 func (c Crop) totalScore() float64 {
@@ -249,7 +283,7 @@ func score(output *image.RGBA, crop Crop) Score {
 	return score
 }
 
-func analyse(logger Logger, img *image.RGBA, cropWidth, cropHeight, realMinScale float64) (image.Rectangle, error) {
+func analyse(logger Logger, img *image.RGBA, cropWidth, cropHeight, realMinScale float64) ([]Crop, *image.RGBA) {
 	o := image.NewRGBA(img.Bounds())
 
 	now := time.Now()
@@ -268,29 +302,31 @@ func analyse(logger Logger, img *image.RGBA, cropWidth, cropHeight, realMinScale
 	debugOutput(logger.DebugMode, o, "saturation")
 
 	now = time.Now()
-	var topCrop Crop
-	topScore := -1.0
 	cs := crops(o, cropWidth, cropHeight, realMinScale)
 	logger.Log.Println("Time elapsed crops:", time.Since(now), len(cs))
 
+	// evaluate the scores for each candidate crop, and update the Score field of each crop object
 	now = time.Now()
-	for _, crop := range cs {
+	for i, crop := range cs {
 		nowIn := time.Now()
-		crop.Score = score(o, crop)
+		cs[i].Score = score(o, crop)
 		logger.Log.Println("Time elapsed single-score:", time.Since(nowIn))
+	}
+	logger.Log.Println("Time elapsed score:", time.Since(now))
+
+	return cs, o
+}
+
+func findTopCrop(logger Logger, cs []Crop) Crop {
+	var topCrop Crop
+	topScore := -1.0
+	for _, crop := range cs {
 		if crop.totalScore() > topScore {
 			topCrop = crop
 			topScore = crop.totalScore()
 		}
 	}
-	logger.Log.Println("Time elapsed score:", time.Since(now))
-
-	if logger.DebugMode {
-		drawDebugCrop(topCrop, o)
-		debugOutput(true, o, "final")
-	}
-
-	return topCrop.Rectangle, nil
+	return topCrop
 }
 
 func saturation(c color.RGBA) float64 {

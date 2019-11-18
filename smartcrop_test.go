@@ -35,6 +35,7 @@ import (
 	_ "image/png"
 	"io/ioutil"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 
@@ -49,6 +50,11 @@ var (
 func smartCrop(img image.Image, width, height int) (image.Rectangle, error) {
 	analyzer := NewAnalyzer(nfnt.NewDefaultResizer())
 	return analyzer.FindBestCrop(img, width, height)
+}
+
+func allCrops(img image.Image, width, height int) ([]Crop, error) {
+	analyzer := NewAnalyzer(nfnt.NewDefaultResizer())
+	return analyzer.FindAllCrops(img, width, height)
 }
 
 type SubImager interface {
@@ -73,10 +79,29 @@ func TestCrop(t *testing.T) {
 		t.Fatalf("expected %v, got %v", expected, topCrop)
 	}
 
+	// test top 3 from allCrops
+	allCrops, err := allCrops(img, 250, 250)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sort by score desc
+	sort.Slice(allCrops, func(i, j int) bool {
+		return allCrops[i].totalScore() > allCrops[j].totalScore()
+	})
+	expectedTop3 := []image.Rectangle{
+		image.Rect(464, 24, 719, 279),
+		image.Rect(480, 24, 735, 279),
+		image.Rect(472, 24, 727, 279),
+	}
+	for i, gotCrop := range allCrops[:3] {
+		if gotCrop.Rectangle != expectedTop3[i] {
+			t.Fatalf("failed on allCrops in pos %d: expected %v, got %v", i, expectedTop3[i], gotCrop.Rectangle)
+		}
+	}
+
 	sub, ok := img.(SubImager)
 	if ok {
 		cropImage := sub.SubImage(topCrop)
-		// cropImage := sub.SubImage(image.Rect(topCrop.X, topCrop.Y, topCrop.Width+topCrop.X, topCrop.Height+topCrop.Y))
 		writeImage("jpeg", cropImage, "./smartcrop.jpg")
 	} else {
 		t.Error(errors.New("No SubImage support"))
