@@ -38,7 +38,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/muesli/smartcrop/nfnt"
+	"github.com/third-light/smartcrop/nfnt"
 )
 
 var (

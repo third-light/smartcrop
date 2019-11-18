@@ -37,8 +37,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/muesli/smartcrop"
-	"github.com/muesli/smartcrop/nfnt"
+	"github.com/third-light/smartcrop"
+	"github.com/third-light/smartcrop/nfnt"
 )
 
 func main() {
