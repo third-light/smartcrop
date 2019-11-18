@@ -34,6 +34,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io/ioutil"
+	"log"
 	"os"
 	"sort"
 	"strings"
@@ -48,12 +49,12 @@ var (
 
 // Moved here and unexported to decouple the resizer implementation.
 func smartCrop(img image.Image, width, height int) (image.Rectangle, error) {
-	analyzer := NewAnalyzer(nfnt.NewDefaultResizer())
+	analyzer := NewAnalyzer(DefaultConfig, nfnt.NewDefaultResizer())
 	return analyzer.FindBestCrop(img, width, height)
 }
 
 func allCrops(img image.Image, width, height int) ([]Crop, error) {
-	analyzer := NewAnalyzer(nfnt.NewDefaultResizer())
+	analyzer := NewAnalyzer(DefaultConfig, nfnt.NewDefaultResizer())
 	return analyzer.FindAllCrops(img, width, height)
 }
 
@@ -86,7 +87,7 @@ func TestCrop(t *testing.T) {
 	}
 	// Sort by score desc
 	sort.Slice(allCrops, func(i, j int) bool {
-		return allCrops[i].totalScore() > allCrops[j].totalScore()
+		return allCrops[i].Score.Total > allCrops[j].Score.Total
 	})
 	expectedTop3 := []image.Rectangle{
 		image.Rect(464, 24, 719, 279),
@@ -129,6 +130,15 @@ func BenchmarkCrop(b *testing.B) {
 }
 
 func BenchmarkEdge(b *testing.B) {
+	logger := Logger{
+		DebugMode: false,
+		Log:       log.New(ioutil.Discard, "", 0),
+	}
+	analyzer := smartcropAnalyzer{
+		Resizer: nfnt.NewDefaultResizer(),
+		logger:  logger,
+		config:  DefaultConfig,
+	}
 	fi, err := os.Open(testFile)
 	if err != nil {
 		b.Fatal(err)
@@ -144,7 +154,7 @@ func BenchmarkEdge(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		o := image.NewRGBA(img.Bounds())
-		edgeDetect(rgbaImg, o)
+		analyzer.edgeDetect(rgbaImg, o)
 	}
 }
 
