@@ -44,6 +44,7 @@ import (
 	"github.com/third-light/smartcrop/options"
 
 	"golang.org/x/image/draw"
+	"gocv.io/x/gocv"
 )
 
 var (
@@ -52,107 +53,6 @@ var (
 
 	skinColor = [3]float64{0.78, 0.57, 0.44}
 )
-
-const (
-// detailWeight            = 0.2
-// skinBias                = 0.01
-// skinBrightnessMin       = 0.2
-// skinBrightnessMax       = 1.0
-// skinThreshold           = 0.8
-// skinWeight              = 1.8
-// saturationBrightnessMin = 0.05
-// saturationBrightnessMax = 0.9
-// saturationThreshold     = 0.4
-// saturationBias          = 0.2
-// saturationWeight        = 0.3
-// scoreDownSample         = 8 // step * minscale rounded down to the next power of two should be good
-// step                    = 8
-// scaleStep               = 0.1
-// minScale                = 0.9
-// maxScale                = 1.0
-// edgeRadius              = 0.4
-// edgeWeight              = -20.0
-// outsideImportance       = -0.5
-// ruleOfThirds            = true
-// prescale                = true
-// prescaleMin             = 400.00
-)
-
-type Config struct {
-	DetailWeight            float64
-	SkinBias                float64
-	SkinBrightnessMin       float64
-	SkinBrightnessMax       float64
-	SkinThreshold           float64
-	SkinWeight              float64
-	SaturationBrightnessMin float64
-	SaturationBrightnessMax float64
-	SaturationThreshold     float64
-	SaturationBias          float64
-	SaturationWeight        float64
-	ScoreDownSample         int
-	Step                    int
-	ScaleStep               float64
-	MinScale                float64
-	MaxScale                float64
-	EdgeRadius              float64
-	EdgeWeight              float64
-	OutsideImportance       float64
-	RuleOfThirds            bool
-	Prescale                bool
-	PrescaleMin             float64
-}
-
-var DefaultConfig = Config{
-	DetailWeight:            0.2,
-	SkinBias:                0.01,
-	SkinBrightnessMin:       0.2,
-	SkinBrightnessMax:       1.0,
-	SkinThreshold:           0.8,
-	SkinWeight:              1.8,
-	SaturationBrightnessMin: 0.05,
-	SaturationBrightnessMax: 0.9,
-	SaturationThreshold:     0.4,
-	SaturationBias:          0.2,
-	SaturationWeight:        0.3,
-	ScoreDownSample:         8, // step * minscale rounded down to the next power of two should be good
-	Step:                    8,
-	ScaleStep:               0.1,
-	MinScale:                0.9,
-	MaxScale:                1.0,
-	EdgeRadius:              0.4,
-	EdgeWeight:              -20.0,
-	OutsideImportance:       -0.5,
-	RuleOfThirds:            true,
-	Prescale:                true,
-	PrescaleMin:             400.00,
-}
-
-// Following config came from Ryan Liew during intenrhsip at Third Light
-var RyanConfig = Config{
-	DetailWeight:            5.2,
-	SkinBias:                0.01,
-	SkinBrightnessMin:       0.2,
-	SkinBrightnessMax:       1.0,
-	SkinThreshold:           0.8,
-	SkinWeight:              5.8,
-	SaturationBrightnessMin: 0.05,
-	SaturationBrightnessMax: 0.9,
-	SaturationThreshold:     0.4,
-	SaturationBias:          0.2,
-	SaturationWeight:        5.5,
-	ScoreDownSample:         8,
-	Step:                    8,
-	ScaleStep:               0.1,
-	MinScale:                0.1,
-	MaxScale:                0.9,
-	EdgeRadius:              0.4,
-	EdgeWeight:              -20.0,
-	OutsideImportance:       -0.5,
-	RuleOfThirds:            false,
-	Prescale:                true,
-	PrescaleMin:             600.00,
-}
 
 // Analyzer interface analyzes its struct and returns the best possible crop with the given
 // width and height returns an error if invalid
@@ -166,6 +66,7 @@ type Score struct {
 	Detail     float64
 	Saturation float64
 	Skin       float64
+	Face       float64
 	Total      float64
 }
 
@@ -211,7 +112,7 @@ func NewAnalyzerWithLogger(c Config, resizer options.Resizer, logger Logger) Ana
 func (sca smartcropAnalyzer) preprocessForAnalysis(img image.Image, width, height int) (*image.RGBA, float64, float64, float64, float64) {
 	// resize image for faster processing
 	scale := math.Min(float64(img.Bounds().Dx())/float64(width), float64(img.Bounds().Dy())/float64(height))
-	var lowimg *image.RGBA
+	var rgbaImg *image.RGBA
 	var prescalefactor = 1.0
 
 	if sca.config.Prescale {
@@ -225,13 +126,13 @@ func (sca smartcropAnalyzer) preprocessForAnalysis(img image.Image, width, heigh
 			uint(float64(img.Bounds().Dx())*prescalefactor),
 			0)
 
-		lowimg = toRGBA(smallimg)
+		rgbaImg = toRGBA(smallimg)
 	} else {
-		lowimg = toRGBA(img)
+		rgbaImg = toRGBA(img)
 	}
 
 	if sca.logger.DebugMode {
-		writeImage("png", lowimg, "./smartcrop_prescale.png")
+		writeImage("png", rgbaImg, "./smartcrop_prescale.png")
 	}
 
 	cropWidth, cropHeight := chop(float64(width)*scale*prescalefactor), chop(float64(height)*scale*prescalefactor)
@@ -240,7 +141,7 @@ func (sca smartcropAnalyzer) preprocessForAnalysis(img image.Image, width, heigh
 	sca.logger.Log.Printf("original resolution: %dx%d\n", img.Bounds().Dx(), img.Bounds().Dy())
 	sca.logger.Log.Printf("scale: %f, cropw: %f, croph: %f, minscale: %f\n", scale, cropWidth, cropHeight, realMinScale)
 
-	return lowimg, cropWidth, cropHeight, realMinScale, prescalefactor
+	return rgbaImg, cropWidth, cropHeight, realMinScale, prescalefactor
 }
 
 func (sca smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (image.Rectangle, error) {
@@ -248,9 +149,9 @@ func (sca smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (i
 		return image.Rectangle{}, ErrInvalidDimensions
 	}
 
-	lowimg, cropWidth, cropHeight, realMinScale, prescalefactor := sca.preprocessForAnalysis(img, width, height)
+	rgbaImg, cropWidth, cropHeight, realMinScale, prescalefactor := sca.preprocessForAnalysis(img, width, height)
 
-	allCrops, processedImg := sca.analyse(lowimg, cropWidth, cropHeight, realMinScale)
+	allCrops, processedImg := sca.analyse(rgbaImg, cropWidth, cropHeight, realMinScale)
 	topCrop := sca.findTopCrop(allCrops)
 
 	if sca.logger.DebugMode {
@@ -273,9 +174,9 @@ func (sca smartcropAnalyzer) FindAllCrops(img image.Image, width, height int) ([
 		return []Crop{}, ErrInvalidDimensions
 	}
 
-	lowimg, cropWidth, cropHeight, realMinScale, prescalefactor := sca.preprocessForAnalysis(img, width, height)
+	rgbaImg, cropWidth, cropHeight, realMinScale, prescalefactor := sca.preprocessForAnalysis(img, width, height)
 
-	allCrops, _ := sca.analyse(lowimg, cropWidth, cropHeight, realMinScale)
+	allCrops, _ := sca.analyse(rgbaImg, cropWidth, cropHeight, realMinScale)
 
 	for i, crop := range allCrops {
 		if sca.config.Prescale == true {
@@ -329,7 +230,7 @@ func (sca smartcropAnalyzer) importance(crop Crop, x, y int) float64 {
 	return s + d
 }
 
-func (sca smartcropAnalyzer) score(output *image.RGBA, crop Crop) Score {
+func (sca smartcropAnalyzer) score(output *image.RGBA, crop Crop, faceRescts []image.Rectangle) Score {
 	width := output.Bounds().Dx()
 	height := output.Bounds().Dy()
 	score := Score{}
@@ -354,7 +255,20 @@ func (sca smartcropAnalyzer) score(output *image.RGBA, crop Crop) Score {
 		}
 	}
 
-	score.Total = (score.Detail*sca.config.DetailWeight + score.Skin*sca.config.SkinWeight + score.Saturation*sca.config.SaturationWeight) / float64(crop.Dx()) / float64(crop.Dy())
+	if oca.FaceDetectEnabled {
+		// Score for face is based on the proportion of the crop taken up by a face
+		cropRes := crop.Bounds().Dx() * crop.Bounds().Dy()
+		for _ , r := range faceRects {
+			if r.In(crop.Rectangle) {
+				faceRes := r.Bounds().Dx() * r.Bounds().Dy()
+				score.Face += float64(faceRes) / float64(cropRes)
+			}
+		}
+	}
+
+	score.Total = (score.Detail*sca.config.DetailWeight + score.Skin*sca.config.SkinWeight + score.Saturation*sca.config.SaturationWeight)
+	score.Total = score.Total / (float64(crop.Dx()) * float64(crop.Dy()))
+	score.Total = score.Total + score.Face
 
 	return score
 }
@@ -376,6 +290,21 @@ func (sca smartcropAnalyzer) analyse(img *image.RGBA, cropWidth, cropHeight, rea
 	sca.saturationDetect(img, o)
 	sca.logger.Log.Println("Time elapsed sat:", time.Since(now))
 	debugOutput(sca.logger.DebugMode, o, "saturation")
+
+	var faceRects []image.Rectangle
+	if oca.config.FaceDetectEnabled {
+		now = time.Now()
+		var faceOut *image.RGBA
+		if sca.logger.DebugMode {
+			// Copy current output image so we can draw face rects on to new output
+			// We need a copy because o is used for scoring later.
+			faceOut = image.NewRGBA(img.Bounds())
+			draw.Copy(faceOut, image.Pt(0, 0), img, img.Bounds(), draw.Src, nil)
+		}
+		faceRects = sca.faceDetect(img, faceOut)
+		sca.logger.Log.Println("Time elapsed face:", time.Since(now))
+		debugOutput(sca.logger.DebugMode, faceOut, "facedetect")
+	}
 
 	now = time.Now()
 	cs := sca.crops(o, cropWidth, cropHeight, realMinScale)
@@ -540,6 +469,47 @@ func (sca smartcropAnalyzer) saturationDetect(i *image.RGBA, o *image.RGBA) {
 			}
 		}
 	}
+}
+
+func (sca smartcropAnalyzer) faceDetect(i *image.RGBA, o *image.RGBA) []image.Rectangle {
+
+	img, err := gocv.ImageToMatRGBA(i)
+	if err != nil {
+		if sca.logger.DebugMode {
+			sca.logger.Log.Printf("failed converting img to MatRGBA: %v", err)
+		}
+		return nil
+	}
+
+	classifier := gocv.NewCascadeClassifier()
+	defer classifier.Close()
+
+	if !classifier.Load(sca.FaceDetectClassifierFile) {
+		panic(fmt.Errorf("Failed loading classifier file at %s", sca.config.FaceDetectClassifierFile))
+	}
+
+	rects := classifier.DetectMultiScale(img)
+	faceRects := []image.Rectangle{}
+
+	// Filter out the rects with too small area as they are unlikely to be important for smart
+	// cropping. We say a face must consume at least 5% of image to be considered.
+	origRes := i.Bounds().Dx() * i.Bounds().Dy()
+	thresholdRes := 0.05 * float64(origRes)
+	for _, r := range rects {
+		if r.Size().X*r.Size().Y > thresholdRes {
+			faceRects = append(faceRects, r)
+		}
+	}
+
+	// Draw face rects on to output image to see what the algorithm is actually doing
+	// o might be nil - when not in debug mode
+	if o != nil {
+		boxColor := color.RGBA{255, 0, 0, 0}
+		for _, r := range faceRects {
+		drawRect(o, boxColor, r)
+	}
+
+	return faceRects
 }
 
 func (sca smartcropAnalyzer) crops(i image.Image, cropWidth, cropHeight, realMinScale float64) []Crop {
