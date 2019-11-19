@@ -43,8 +43,8 @@ import (
 
 	"github.com/third-light/smartcrop/options"
 
-	"golang.org/x/image/draw"
 	"gocv.io/x/gocv"
+	"golang.org/x/image/draw"
 )
 
 var (
@@ -230,7 +230,7 @@ func (sca smartcropAnalyzer) importance(crop Crop, x, y int) float64 {
 	return s + d
 }
 
-func (sca smartcropAnalyzer) score(output *image.RGBA, crop Crop, faceRescts []image.Rectangle) Score {
+func (sca smartcropAnalyzer) score(output *image.RGBA, crop Crop, faceRects []image.Rectangle) Score {
 	width := output.Bounds().Dx()
 	height := output.Bounds().Dy()
 	score := Score{}
@@ -255,10 +255,10 @@ func (sca smartcropAnalyzer) score(output *image.RGBA, crop Crop, faceRescts []i
 		}
 	}
 
-	if oca.FaceDetectEnabled {
+	if sca.config.FaceDetectEnabled {
 		// Score for face is based on the proportion of the crop taken up by a face
 		cropRes := crop.Bounds().Dx() * crop.Bounds().Dy()
-		for _ , r := range faceRects {
+		for _, r := range faceRects {
 			if r.In(crop.Rectangle) {
 				faceRes := r.Bounds().Dx() * r.Bounds().Dy()
 				score.Face += float64(faceRes) / float64(cropRes)
@@ -292,7 +292,7 @@ func (sca smartcropAnalyzer) analyse(img *image.RGBA, cropWidth, cropHeight, rea
 	debugOutput(sca.logger.DebugMode, o, "saturation")
 
 	var faceRects []image.Rectangle
-	if oca.config.FaceDetectEnabled {
+	if sca.config.FaceDetectEnabled {
 		now = time.Now()
 		var faceOut *image.RGBA
 		if sca.logger.DebugMode {
@@ -314,7 +314,7 @@ func (sca smartcropAnalyzer) analyse(img *image.RGBA, cropWidth, cropHeight, rea
 	now = time.Now()
 	for i, crop := range cs {
 		nowIn := time.Now()
-		cs[i].Score = sca.score(o, crop)
+		cs[i].Score = sca.score(o, crop, faceRects)
 		sca.logger.Log.Println("Time elapsed single-score:", time.Since(nowIn))
 	}
 	sca.logger.Log.Println("Time elapsed score:", time.Since(now))
@@ -484,7 +484,7 @@ func (sca smartcropAnalyzer) faceDetect(i *image.RGBA, o *image.RGBA) []image.Re
 	classifier := gocv.NewCascadeClassifier()
 	defer classifier.Close()
 
-	if !classifier.Load(sca.FaceDetectClassifierFile) {
+	if !classifier.Load(sca.config.FaceDetectClassifierFile) {
 		panic(fmt.Errorf("Failed loading classifier file at %s", sca.config.FaceDetectClassifierFile))
 	}
 
@@ -496,7 +496,7 @@ func (sca smartcropAnalyzer) faceDetect(i *image.RGBA, o *image.RGBA) []image.Re
 	origRes := i.Bounds().Dx() * i.Bounds().Dy()
 	thresholdRes := 0.05 * float64(origRes)
 	for _, r := range rects {
-		if r.Size().X*r.Size().Y > thresholdRes {
+		if float64(r.Bounds().Dx()*r.Bounds().Dy()) > thresholdRes {
 			faceRects = append(faceRects, r)
 		}
 	}
@@ -506,7 +506,8 @@ func (sca smartcropAnalyzer) faceDetect(i *image.RGBA, o *image.RGBA) []image.Re
 	if o != nil {
 		boxColor := color.RGBA{255, 0, 0, 0}
 		for _, r := range faceRects {
-		drawRect(o, boxColor, r)
+			drawRect(o, boxColor, r)
+		}
 	}
 
 	return faceRects
