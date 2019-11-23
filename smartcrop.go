@@ -92,6 +92,15 @@ type smartcropAnalyzer struct {
 	config Config
 }
 
+// NewDebugAnalyzer returns a new Analyzer using the given Resizer with debugging turned on.
+func NewDebugAnalyzer(c Config, resizer options.Resizer) Analyzer {
+	logger := Logger{
+		DebugMode: true,
+	}
+
+	return NewAnalyzerWithLogger(c, resizer, logger)
+}
+
 // NewAnalyzer returns a new Analyzer using the given Resizer.
 func NewAnalyzer(c Config, resizer options.Resizer) Analyzer {
 	logger := Logger{
@@ -284,12 +293,12 @@ func (sca smartcropAnalyzer) analyse(img *image.RGBA, cropWidth, cropHeight, rea
 	now = time.Now()
 	sca.skinDetect(img, o)
 	sca.logger.Log.Println("Time elapsed skin:", time.Since(now))
-	debugOutput(sca.logger.DebugMode, o, "skin")
+	debugOutput(sca.logger.DebugMode, o, "edge-skin")
 
 	now = time.Now()
 	sca.saturationDetect(img, o)
 	sca.logger.Log.Println("Time elapsed sat:", time.Since(now))
-	debugOutput(sca.logger.DebugMode, o, "saturation")
+	debugOutput(sca.logger.DebugMode, o, "edge-skin-saturation")
 
 	var faceRects []image.Rectangle
 	if sca.config.FaceDetectEnabled {

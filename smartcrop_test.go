@@ -44,7 +44,7 @@ import (
 )
 
 var (
-	testFile = "./examples/gopher.jpg"
+	testFile = "./examples/gopher_test.jpg"
 )
 
 // Moved here and unexported to decouple the resizer implementation.
@@ -75,7 +75,7 @@ func TestCrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := image.Rect(464, 24, 719, 279)
+	expected := image.Rect(120, 0, 404, 284)
 	if topCrop != expected {
 		t.Fatalf("expected %v, got %v", expected, topCrop)
 	}
@@ -90,9 +90,9 @@ func TestCrop(t *testing.T) {
 		return allCrops[i].Score.Total > allCrops[j].Score.Total
 	})
 	expectedTop3 := []image.Rectangle{
-		image.Rect(464, 24, 719, 279),
-		image.Rect(480, 24, 735, 279),
-		image.Rect(472, 24, 727, 279),
+		image.Rect(120, 0, 404, 284),
+		image.Rect(112, 0, 396, 284),
+		image.Rect(128, 8, 383, 263),
 	}
 	for i, gotCrop := range allCrops[:3] {
 		if gotCrop.Rectangle != expectedTop3[i] {
