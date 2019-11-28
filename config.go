@@ -59,8 +59,9 @@ var DefaultConfig = Config{
 	FaceDetectClassifierFile: "",
 }
 
-// Following config came from Ryan Liew during internship at Third Light
-var RyanConfig = Config{
+// FaceDetectConfig is a tweaked version of the DefaultConfig that has been optimised for
+// smart cropping with face detection enabled.
+var FaceDetectConfig = Config{
 	DetailWeight:             5.2,
 	SkinBias:                 0.01,
 	SkinBrightnessMin:        0.2,
@@ -72,17 +73,17 @@ var RyanConfig = Config{
 	SaturationThreshold:      0.4,
 	SaturationBias:           0.2,
 	SaturationWeight:         5.5,
-	ScoreDownSample:          8,
+	ScoreDownSample:          2,
 	Step:                     8,
 	ScaleStep:                0.1,
-	MinScale:                 0.1,
-	MaxScale:                 0.9,
+	MinScale:                 1.0,
+	MaxScale:                 1.0,
 	EdgeRadius:               0.4,
 	EdgeWeight:               -20.0,
 	OutsideImportance:        -0.5,
-	RuleOfThirds:             false,
-	Prescale:                 true,
-	PrescaleMin:              600.00,
+	RuleOfThirds:             true,
+	Prescale:                 false,
+	PrescaleMin:              400.0,
 	FaceDetectEnabled:        true,
 	FaceDetectClassifierFile: "", // must be filled in by client
 }
