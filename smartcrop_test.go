@@ -63,7 +63,7 @@ func allCrops(img image.Image, width, height int) ([]Crop, error) {
 func faces(img image.Image) []image.Rectangle {
 	cfg := FaceDetectConfig
 	cfg.FaceDetectClassifierFile = faceDetectClassifier
-	analyzer := NewDebugAnalyzer(cfg, nfnt.NewDefaultResizer())
+	analyzer := NewAnalyzer(cfg, nfnt.NewDefaultResizer())
 	return analyzer.FindFaces(img)
 }
 
