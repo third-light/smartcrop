@@ -44,7 +44,9 @@ import (
 )
 
 var (
-	testFile = "./examples/gopher_test.jpg"
+	testFile             = "./examples/gopher_test.jpg"
+	faceTestFile         = "./examples/face_test.jpg"
+	faceDetectClassifier = "./resources/haarcascade_frontalface_default.xml"
 )
 
 // Moved here and unexported to decouple the resizer implementation.
@@ -58,8 +60,49 @@ func allCrops(img image.Image, width, height int) ([]Crop, error) {
 	return analyzer.FindAllCrops(img, width, height)
 }
 
+func faces(img image.Image) []image.Rectangle {
+	cfg := FaceDetectConfig
+	cfg.FaceDetectClassifierFile = faceDetectClassifier
+	analyzer := NewDebugAnalyzer(cfg, nfnt.NewDefaultResizer())
+	return analyzer.FindFaces(img)
+}
+
 type SubImager interface {
 	SubImage(r image.Rectangle) image.Image
+}
+
+func TestFace(t *testing.T) {
+	fi, _ := os.Open(faceTestFile)
+	defer fi.Close()
+
+	img, _, err := image.Decode(fi)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rects := faces(img)
+	sort.Slice(rects, func(i, j int) bool {
+		return rects[i].Min.X < rects[j].Min.X
+	})
+	expected := []image.Rectangle{
+		image.Rect(877, 492, 1518, 1133),
+		image.Rect(1427, 271, 1937, 781),
+		image.Rect(2207, 997, 2233, 1023),
+		image.Rect(2234, 1396, 2336, 1498),
+	}
+	matched := false
+	if len(rects) == len(expected) {
+		matched = true
+		for i, r := range rects {
+			if r != expected[i] {
+				matched = false
+				break
+			}
+		}
+	}
+	if !matched {
+		t.Fatalf("expected %v, got %v", expected, rects)
+	}
 }
 
 func TestCrop(t *testing.T) {

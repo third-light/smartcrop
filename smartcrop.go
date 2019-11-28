@@ -59,6 +59,7 @@ var (
 type Analyzer interface {
 	FindBestCrop(img image.Image, width, height int) (image.Rectangle, error)
 	FindAllCrops(img image.Image, width, height int) ([]Crop, error)
+	FindFaces(img image.Image) []image.Rectangle
 }
 
 // Score contains values that classify matches
@@ -89,7 +90,9 @@ type Logger struct {
 type smartcropAnalyzer struct {
 	logger Logger
 	options.Resizer
-	config Config
+	config                Config
+	faceDetectInitialised bool
+	faceDetectClassifier  gocv.CascadeClassifier
 }
 
 // NewDebugAnalyzer returns a new Analyzer using the given Resizer with debugging turned on.
@@ -151,6 +154,25 @@ func (sca smartcropAnalyzer) preprocessForAnalysis(img image.Image, width, heigh
 	sca.logger.Log.Printf("scale: %f, cropw: %f, croph: %f, minscale: %f\n", scale, cropWidth, cropHeight, realMinScale)
 
 	return rgbaImg, cropWidth, cropHeight, realMinScale, prescalefactor
+}
+
+func (sca smartcropAnalyzer) FindFaces(img image.Image) []image.Rectangle {
+
+	var faceRects []image.Rectangle
+	if sca.config.FaceDetectEnabled {
+		now := time.Now()
+		var faceOut *image.RGBA
+		if sca.logger.DebugMode {
+			// Copy current output image so we can draw face rects on to new output
+			faceOut = image.NewRGBA(img.Bounds())
+			draw.Copy(faceOut, image.Pt(0, 0), img, img.Bounds(), draw.Src, nil)
+		}
+		faceRects = sca.faceDetect(img, faceOut)
+		sca.logger.Log.Println("Time elapsed face:", time.Since(now))
+		debugOutput(sca.logger.DebugMode, faceOut, "facedetect")
+	}
+
+	return faceRects
 }
 
 func (sca smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (image.Rectangle, error) {
@@ -480,7 +502,7 @@ func (sca smartcropAnalyzer) saturationDetect(i *image.RGBA, o *image.RGBA) {
 	}
 }
 
-func (sca smartcropAnalyzer) faceDetect(i *image.RGBA, o *image.RGBA) []image.Rectangle {
+func (sca smartcropAnalyzer) faceDetect(i image.Image, o *image.RGBA) []image.Rectangle {
 
 	img, err := gocv.ImageToMatRGBA(i)
 	if err != nil {
@@ -490,30 +512,20 @@ func (sca smartcropAnalyzer) faceDetect(i *image.RGBA, o *image.RGBA) []image.Re
 		return nil
 	}
 
-	classifier := gocv.NewCascadeClassifier()
-	defer classifier.Close()
-
-	if !classifier.Load(sca.config.FaceDetectClassifierFile) {
-		panic(fmt.Errorf("Failed loading classifier file at %s", sca.config.FaceDetectClassifierFile))
-	}
-
-	rects := classifier.DetectMultiScale(img)
-	faceRects := []image.Rectangle{}
-
-	// Filter out the rects with too small area as they are unlikely to be important for smart
-	// cropping. We say a face must consume at least 5% of image to be considered.
-	origRes := i.Bounds().Dx() * i.Bounds().Dy()
-	thresholdRes := 0.05 * float64(origRes)
-	for _, r := range rects {
-		if float64(r.Bounds().Dx()*r.Bounds().Dy()) > thresholdRes {
-			faceRects = append(faceRects, r)
+	if !sca.faceDetectInitialised {
+		sca.faceDetectClassifier = gocv.NewCascadeClassifier()
+		if !sca.faceDetectClassifier.Load(sca.config.FaceDetectClassifierFile) {
+			panic(fmt.Errorf("Failed loading classifier file at %s", sca.config.FaceDetectClassifierFile))
 		}
+		sca.faceDetectInitialised = true
 	}
+
+	faceRects := sca.faceDetectClassifier.DetectMultiScale(img)
 
 	// Draw face rects on to output image to see what the algorithm is actually doing
 	// o might be nil - when not in debug mode
 	if o != nil {
-		boxColor := color.RGBA{255, 0, 0, 0}
+		boxColor := color.RGBA{255, 0, 0, 255}
 		for _, r := range faceRects {
 			drawRect(o, boxColor, r)
 		}
