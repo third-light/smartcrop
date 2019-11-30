@@ -41,9 +41,9 @@ import (
 	"math"
 	"time"
 
+	pigo "github.com/esimov/pigo/core"
 	"github.com/third-light/smartcrop/options"
 
-	"gocv.io/x/gocv"
 	"golang.org/x/image/draw"
 )
 
@@ -92,7 +92,7 @@ type smartcropAnalyzer struct {
 	options.Resizer
 	config                Config
 	faceDetectInitialised bool
-	faceDetectClassifier  gocv.CascadeClassifier
+	faceDetectClassifier  *pigo.Pigo
 }
 
 // NewDebugAnalyzer returns a new Analyzer using the given Resizer with debugging turned on.
@@ -504,23 +504,62 @@ func (sca smartcropAnalyzer) saturationDetect(i *image.RGBA, o *image.RGBA) {
 
 func (sca smartcropAnalyzer) faceDetect(i image.Image, o *image.RGBA) []image.Rectangle {
 
-	img, err := gocv.ImageToMatRGBA(i)
-	if err != nil {
-		if sca.logger.DebugMode {
-			sca.logger.Log.Printf("failed converting img to MatRGBA: %v", err)
-		}
-		return nil
-	}
-
 	if !sca.faceDetectInitialised {
-		sca.faceDetectClassifier = gocv.NewCascadeClassifier()
-		if !sca.faceDetectClassifier.Load(sca.config.FaceDetectClassifierFile) {
+		p := pigo.NewPigo()
+		cascadeFile, err := ioutil.ReadFile(sca.config.FaceDetectClassifierFile)
+		if err != nil {
 			panic(fmt.Errorf("Failed loading classifier file at %s", sca.config.FaceDetectClassifierFile))
+		}
+		// Unpack the binary file. This will return the number of cascade trees,
+		// the tree depth, the threshold and the prediction from tree's leaf nodes.
+		sca.faceDetectClassifier, err = p.Unpack(cascadeFile)
+		if err != nil {
+			panic(fmt.Errorf("Failed unpacking classifier file at %s", sca.config.FaceDetectClassifierFile))
 		}
 		sca.faceDetectInitialised = true
 	}
 
-	faceRects := sca.faceDetectClassifier.DetectMultiScale(img)
+	src := pigo.ImgToNRGBA(i)
+	pixels := pigo.RgbToGrayscale(src)
+	cols, rows := src.Bounds().Max.X, src.Bounds().Max.Y
+
+	faceMax := cols
+	if rows < faceMax {
+		faceMax = rows
+	}
+
+	cascadeParams := pigo.CascadeParams{
+		MinSize:     10,      // minimum size of face
+		MaxSize:     faceMax, // maximum size of face
+		ShiftFactor: 0.1,     // Shift detection window by percentage
+		ScaleFactor: 1.1,     // Scale detection window by percentage
+
+		ImageParams: pigo.ImageParams{
+			Pixels: pixels,
+			Rows:   rows,
+			Cols:   cols,
+			Dim:    cols,
+		},
+	}
+
+	// Run the classifier over the obtained leaf nodes and return the detection results.
+	// The result contains quadruplets representing the row, column, scale and detection score.
+	faces := sca.faceDetectClassifier.RunCascade(cascadeParams, 0.0)
+	// Calculate the intersection over union (IoU) of two clusters.
+	// We need to make this comparison to filter out multiple face detection regions.
+	faces = sca.faceDetectClassifier.ClusterDetections(faces, 0.2) // "Intersection over union (IoU) threshold"
+
+	faceRects := []image.Rectangle{}
+	for _, face := range faces {
+		if face.Q > 5.0 { // qThreshold
+			faceRects = append(faceRects, image.Rect(
+				face.Col-face.Scale/2,
+				face.Row-face.Scale/2,
+				face.Col+face.Scale/2,
+				face.Row+face.Scale/2,
+			))
+		}
+	}
 
 	// Draw face rects on to output image to see what the algorithm is actually doing
 	// o might be nil - when not in debug mode

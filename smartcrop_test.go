@@ -46,7 +46,7 @@ import (
 var (
 	testFile             = "./examples/gopher_test.jpg"
 	faceTestFile         = "./examples/face_test.jpg"
-	faceDetectClassifier = "./resources/haarcascade_frontalface_default.xml"
+	faceDetectClassifier = "./resources/facefinder.dms"
 )
 
 // Moved here and unexported to decouple the resizer implementation.
@@ -85,10 +85,7 @@ func TestFace(t *testing.T) {
 		return rects[i].Min.X < rects[j].Min.X
 	})
 	expected := []image.Rectangle{
-		image.Rect(877, 492, 1518, 1133),
-		image.Rect(1427, 271, 1937, 781),
-		image.Rect(2207, 997, 2233, 1023),
-		image.Rect(2234, 1396, 2336, 1498),
+		image.Rect(233, 41, 315, 123),
 	}
 	matched := false
 	if len(rects) == len(expected) {
