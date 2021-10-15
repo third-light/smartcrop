@@ -121,7 +121,7 @@ func NewAnalyzerWithLogger(c Config, resizer options.Resizer, logger Logger) Ana
 	return &smartcropAnalyzer{Resizer: resizer, logger: logger, config: c}
 }
 
-func (sca smartcropAnalyzer) preprocessForAnalysis(img image.Image, width, height int) (*image.RGBA, float64, float64, float64, float64) {
+func (sca *smartcropAnalyzer) preprocessForAnalysis(img image.Image, width, height int) (*image.RGBA, float64, float64, float64, float64) {
 	// resize image for faster processing
 	scale := math.Min(float64(img.Bounds().Dx())/float64(width), float64(img.Bounds().Dy())/float64(height))
 	var rgbaImg *image.RGBA
@@ -156,7 +156,7 @@ func (sca smartcropAnalyzer) preprocessForAnalysis(img image.Image, width, heigh
 	return rgbaImg, cropWidth, cropHeight, realMinScale, prescalefactor
 }
 
-func (sca smartcropAnalyzer) FindFaces(img image.Image) []image.Rectangle {
+func (sca *smartcropAnalyzer) FindFaces(img image.Image) []image.Rectangle {
 
 	var faceRects []image.Rectangle
 	if sca.config.FaceDetectEnabled {
@@ -175,7 +175,7 @@ func (sca smartcropAnalyzer) FindFaces(img image.Image) []image.Rectangle {
 	return faceRects
 }
 
-func (sca smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (image.Rectangle, error) {
+func (sca *smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (image.Rectangle, error) {
 	if width == 0 && height == 0 {
 		return image.Rectangle{}, ErrInvalidDimensions
 	}
@@ -200,7 +200,7 @@ func (sca smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (i
 	return topCrop.Canon(), nil
 }
 
-func (sca smartcropAnalyzer) FindAllCrops(img image.Image, width, height int) ([]Crop, error) {
+func (sca *smartcropAnalyzer) FindAllCrops(img image.Image, width, height int) ([]Crop, error) {
 	if width == 0 && height == 0 {
 		return []Crop{}, ErrInvalidDimensions
 	}
@@ -238,7 +238,7 @@ func bounds(l float64) float64 {
 	return math.Min(math.Max(l, 0.0), 255)
 }
 
-func (sca smartcropAnalyzer) importance(crop Crop, x, y int) float64 {
+func (sca *smartcropAnalyzer) importance(crop Crop, x, y int) float64 {
 	if crop.Min.X > x || x >= crop.Max.X || crop.Min.Y > y || y >= crop.Max.Y {
 		return sca.config.OutsideImportance
 	}
@@ -261,7 +261,7 @@ func (sca smartcropAnalyzer) importance(crop Crop, x, y int) float64 {
 	return s + d
 }
 
-func (sca smartcropAnalyzer) score(output *image.RGBA, crop Crop, faceRects []image.Rectangle) Score {
+func (sca *smartcropAnalyzer) score(output *image.RGBA, crop Crop, faceRects []image.Rectangle) Score {
 	width := output.Bounds().Dx()
 	height := output.Bounds().Dy()
 	score := Score{}
@@ -304,7 +304,7 @@ func (sca smartcropAnalyzer) score(output *image.RGBA, crop Crop, faceRects []im
 	return score
 }
 
-func (sca smartcropAnalyzer) analyse(img *image.RGBA, cropWidth, cropHeight, realMinScale float64) ([]Crop, *image.RGBA) {
+func (sca *smartcropAnalyzer) analyse(img *image.RGBA, cropWidth, cropHeight, realMinScale float64) ([]Crop, *image.RGBA) {
 	o := image.NewRGBA(img.Bounds())
 
 	now := time.Now()
@@ -353,7 +353,7 @@ func (sca smartcropAnalyzer) analyse(img *image.RGBA, cropWidth, cropHeight, rea
 	return cs, o
 }
 
-func (sca smartcropAnalyzer) findTopCrop(cs []Crop) Crop {
+func (sca *smartcropAnalyzer) findTopCrop(cs []Crop) Crop {
 	var topCrop Crop
 	topScore := -1.0
 	for _, crop := range cs {
@@ -433,7 +433,7 @@ func makeCies(img *image.RGBA) []float64 {
 	return cies
 }
 
-func (sca smartcropAnalyzer) edgeDetect(i *image.RGBA, o *image.RGBA) {
+func (sca *smartcropAnalyzer) edgeDetect(i *image.RGBA, o *image.RGBA) {
 	width := i.Bounds().Dx()
 	height := i.Bounds().Dy()
 	cies := makeCies(i)
@@ -458,7 +458,7 @@ func (sca smartcropAnalyzer) edgeDetect(i *image.RGBA, o *image.RGBA) {
 	}
 }
 
-func (sca smartcropAnalyzer) skinDetect(i *image.RGBA, o *image.RGBA) {
+func (sca *smartcropAnalyzer) skinDetect(i *image.RGBA, o *image.RGBA) {
 	width := i.Bounds().Dx()
 	height := i.Bounds().Dy()
 
@@ -480,7 +480,7 @@ func (sca smartcropAnalyzer) skinDetect(i *image.RGBA, o *image.RGBA) {
 	}
 }
 
-func (sca smartcropAnalyzer) saturationDetect(i *image.RGBA, o *image.RGBA) {
+func (sca *smartcropAnalyzer) saturationDetect(i *image.RGBA, o *image.RGBA) {
 	width := i.Bounds().Dx()
 	height := i.Bounds().Dy()
 
@@ -502,7 +502,7 @@ func (sca smartcropAnalyzer) saturationDetect(i *image.RGBA, o *image.RGBA) {
 	}
 }
 
-func (sca smartcropAnalyzer) faceDetect(i image.Image, o *image.RGBA) []image.Rectangle {
+func (sca *smartcropAnalyzer) faceDetect(i image.Image, o *image.RGBA) []image.Rectangle {
 
 	img, err := gocv.ImageToMatRGBA(i)
 	if err != nil {
@@ -511,6 +511,7 @@ func (sca smartcropAnalyzer) faceDetect(i image.Image, o *image.RGBA) []image.Re
 		}
 		return nil
 	}
+	defer img.Close()
 
 	if !sca.faceDetectInitialised {
 		sca.faceDetectClassifier = gocv.NewCascadeClassifier()
@@ -534,7 +535,7 @@ func (sca smartcropAnalyzer) faceDetect(i image.Image, o *image.RGBA) []image.Re
 	return faceRects
 }
 
-func (sca smartcropAnalyzer) crops(i image.Image, cropWidth, cropHeight, realMinScale float64) []Crop {
+func (sca *smartcropAnalyzer) crops(i image.Image, cropWidth, cropHeight, realMinScale float64) []Crop {
 	res := []Crop{}
 	width := i.Bounds().Dx()
 	height := i.Bounds().Dy()
@@ -566,7 +567,7 @@ func (sca smartcropAnalyzer) crops(i image.Image, cropWidth, cropHeight, realMin
 	return res
 }
 
-func (sca smartcropAnalyzer) drawDebugCrop(topCrop Crop, o *image.RGBA) {
+func (sca *smartcropAnalyzer) drawDebugCrop(topCrop Crop, o *image.RGBA) {
 	width := o.Bounds().Dx()
 	height := o.Bounds().Dy()
 
